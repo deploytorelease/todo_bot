@@ -17,6 +17,7 @@ class User(Base):
     learning_progress = Column(Integer, default=0)
     tasks = relationship("Task", back_populates="owner")
     financial_records = relationship("FinancialRecord", back_populates="owner")
+    regular_payments = relationship("RegularPayment", back_populates="owner")
     goals = relationship("Goal", back_populates="owner")
     last_expense_analysis = Column(DateTime, nullable=True)
 
@@ -44,11 +45,29 @@ class FinancialRecord(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.user_id'))
     amount = Column(Float)
+    currency = Column(String)  # Новое поле
     category = Column(String)
     description = Column(Text, nullable=True)
     date = Column(DateTime, default=datetime.utcnow)
+    type = Column(String)  # 'income' или 'expense'
+    is_planned = Column(Boolean, default=False)  # Для запланированных трат
+    is_savings = Column(Boolean, default=False)  # Для отложенных денег
 
     owner = relationship("User", back_populates="financial_records")
+
+class RegularPayment(Base):
+    __tablename__ = 'regular_payments'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'))
+    amount = Column(Float)
+    currency = Column(String)
+    category = Column(String)
+    description = Column(Text, nullable=True)
+    frequency = Column(String)  # 'monthly', 'quarterly', 'annually', etc.
+    next_payment_date = Column(DateTime)
+
+    owner = relationship("User", back_populates="regular_payments")
 
 class Goal(Base):
     __tablename__ = 'goals'

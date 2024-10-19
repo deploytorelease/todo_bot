@@ -10,7 +10,7 @@ from ai_module import generate_personalized_message
 from message_utils import send_personalized_message, get_user, get_task
 from sqlalchemy import func
 from ai_module import analyze_expenses
-from models import FinancialRecord
+from models import FinancialRecord, RegularPayment
 
 
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +24,8 @@ def start_scheduler(bot):
     scheduler.add_job(send_daily_reminders, 'cron', hour=9, minute=0, args=[bot])
     scheduler.add_job(send_upcoming_reminders, 'interval', minutes=5, args=[bot])
     scheduler.add_job(send_overdue_reminders, 'interval', minutes=30, args=[bot])
-    scheduler.add_job(weekly_expense_analysis, 'cron', day_of_week='mon', hour=9, minute=0, args=[bot])  # Новая задача
+    scheduler.add_job(weekly_expense_analysis, 'cron', day_of_week='mon', hour=9, minute=0, args=[bot])
+    scheduler.add_job(process_regular_payments, 'cron', day_of_week='mon', hour=9, minute=0, args=[bot])
     logging.info("All jobs added to scheduler")
 
 async def send_daily_reminders(bot):
@@ -70,7 +71,7 @@ async def send_task_reminder(bot, user_id, task_id):
         logger.error(f"Ошибка при отправке напоминания: {e}", exc_info=True)
 
 async def weekly_expense_analysis(bot):
-    logger.info("Начало еженедельного анализа расходов")
+    logger.info("Начало еженедельного анализа финансов")
     async with get_db() as session:
         users = await session.execute(select(User))
         users = users.scalars().all()
@@ -78,32 +79,81 @@ async def weekly_expense_analysis(bot):
         for user in users:
             if user.last_expense_analysis is None or (datetime.now() - user.last_expense_analysis).days >= 7:
                 week_ago = datetime.now() - timedelta(days=7)
-                expenses = await session.execute(
+                financial_records = await session.execute(
                     select(FinancialRecord)
                     .where(FinancialRecord.user_id == user.user_id)
                     .where(FinancialRecord.date >= week_ago)
                 )
-                expenses = expenses.scalars().all()
+                financial_records = financial_records.scalars().all()
 
                 expense_data = [
                     {
-                        "amount": expense.amount,
-                        "category": expense.category,
-                        "description": expense.description,
-                        "date": expense.date.isoformat()
+                        "amount": record.amount,
+                        "currency": record.currency,
+                        "category": record.category,
+                        "description": record.description,
+                        "date": record.date.isoformat(),
+                        "is_planned": record.is_planned,
+                        "is_savings": record.is_savings
                     }
-                    for expense in expenses
+                    for record in financial_records if record.type == 'expense'
                 ]
 
-                analysis = await analyze_expenses(expense_data)
+                income_data = [
+                    {
+                        "amount": record.amount,
+                        "currency": record.currency,
+                        "category": record.category,
+                        "description": record.description,
+                        "date": record.date.isoformat()
+                    }
+                    for record in financial_records if record.type == 'income'
+                ]
+
+                analysis = await analyze_expenses(expense_data, income_data)
 
                 await bot.send_message(chat_id=user.user_id, text=analysis)
                 user.last_expense_analysis = datetime.now()
                 await session.commit()
 
-    logger.info("Завершение еженедельного анализа расходов")
+    logger.info("Завершение еженедельного анализа финансов")
 
+async def process_regular_payments(bot):
+    logger.info("Начало обработки регулярных платежей")
+    async with get_db() as session:
+        today = datetime.now().date()
+        payments = await session.execute(
+            select(RegularPayment).where(RegularPayment.next_payment_date <= today)
+        )
+        payments = payments.scalars().all()
 
+        for payment in payments:
+            new_record = FinancialRecord(
+                user_id=payment.user_id,
+                amount=payment.amount,
+                currency=payment.currency,
+                category=payment.category,
+                description=payment.description,
+                type='expense',
+                is_planned=True
+            )
+            session.add(new_record)
+
+            # Обновляем дату следующего платежа
+            if payment.frequency == 'monthly':
+                payment.next_payment_date += timedelta(days=30)
+            elif payment.frequency == 'quarterly':
+                payment.next_payment_date += timedelta(days=91)
+            elif payment.frequency == 'annually':
+                payment.next_payment_date += timedelta(days=365)
+
+            await bot.send_message(
+                chat_id=payment.user_id,
+                text=f"Автоматически внесен регулярный платеж: {payment.amount} {payment.currency} в категории {payment.category}."
+            )
+
+        await session.commit()
+    logger.info("Завершение обработки регулярных платежей")
 
 async def check_user_response(bot, user_id, task_id):
     dp = Dispatcher.get_current()

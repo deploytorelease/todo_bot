@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import io
 from scheduler import send_task_reminder, scheduler
 from message_utils import send_personalized_message, get_user, get_task
-
+from models import RegularPayment
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -138,19 +138,53 @@ async def handle_finance(user_id: int, finance_data: dict) -> str:
             new_record = FinancialRecord(
                 user_id=user_id,
                 amount=finance_data['amount'],
+                currency=finance_data['currency'],
                 category=finance_data['category'],
-                description=finance_data['description']
+                description=finance_data['description'],
+                type=finance_data['type'],  # 'income' или 'expense'
+                is_savings=finance_data.get('is_savings', False)
             )
             session.add(new_record)
             await session.commit()
             logger.info(f"Добавлена новая финансовая запись: {new_record}")
 
-            return f"Записал расход: {new_record.amount} {finance_data.get('currency', 'у.е.')} в категории {new_record.category}."
+            if finance_data['type'] == 'income':
+                return f"Записал доход: {new_record.amount} {new_record.currency} в категории {new_record.category}."
+            else:
+                return f"Записал расход: {new_record.amount} {new_record.currency} в категории {new_record.category}."
 
         except Exception as e:
             await session.rollback()
             logger.error(f"Ошибка при добавлении финансовой записи для пользователя {user_id}: {e}", exc_info=True)
             return "Извините, произошла ошибка при добавлении финансовой записи. Пожалуйста, попробуйте еще раз позже."
+        
+async def add_regular_payment(user_id: int, payment_data: dict) -> str:
+    logger.info(f"Добавление регулярного платежа для пользователя {user_id}: {payment_data}")
+    async with get_db() as session:
+        try:
+            user = await session.get(User, user_id)
+            if not user:
+                return "Пользователь не найден."
+
+            new_payment = RegularPayment(
+                user_id=user_id,
+                amount=payment_data['amount'],
+                currency=payment_data['currency'],
+                category=payment_data['category'],
+                description=payment_data['description'],
+                frequency=payment_data['frequency'],
+                next_payment_date=payment_data['next_payment_date']
+            )
+            session.add(new_payment)
+            await session.commit()
+            logger.info(f"Добавлен новый регулярный платеж: {new_payment}")
+
+            return f"Добавлен регулярный платеж: {new_payment.amount} {new_payment.currency} в категории {new_payment.category}, частота: {new_payment.frequency}."
+
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Ошибка при добавлении регулярного платежа для пользователя {user_id}: {e}", exc_info=True)
+            return "Извините, произошла ошибка при добавлении регулярного платежа. Пожалуйста, попробуйте еще раз позже."
         
 async def handle_goal(user_id: int, goal_data: dict) -> str:
     try:

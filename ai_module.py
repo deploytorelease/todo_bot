@@ -28,8 +28,12 @@ async def parse_message(message_text: str):
             
             // Для финансов:
             "amount": числовое значение,
-            "category": "Категория траты",
-            "description": "Описание траты"
+            "currency": "USD" или "EUR" или "RUB" и т.д.,
+            "category": "Категория транзакции",
+            "description": "Описание транзакции",
+            "type": "income" или "expense" или "savings" или "regular_payment",
+            "frequency": "monthly" или "quarterly" или "annually" (только для regular_payment),
+            "next_payment_date": "YYYY-MM-DD" (только для regular_payment)
             
             // Для цели:
             "title": "Название цели",
@@ -78,6 +82,15 @@ async def parse_message(message_text: str):
                 next_saturday = today + timedelta((5 - today.weekday() + 7) % 7)
                 result['data']['due_date'] = next_saturday.strftime('%d.%m.%Y 23:59')
 
+        if result['type'] == 'finance':
+            if 'currency' not in result['data']:
+                result['data']['currency'] = 'USD'  # Устанавливаем значение по умолчанию, если валюта не указана
+            if 'type' not in result['data']:
+                result['data']['type'] = 'expense'  # По умолчанию считаем операцию расходом
+            if result['data']['type'] == 'regular_payment' and 'frequency' not in result['data']:
+                result['data']['frequency'] = 'monthly'  # Устанавливаем месячную частоту по умолчанию
+
+
         # Обработка уточнения
         if result['type'] == 'clarification' and 'task_number' in result['data']:
             return {"type": "clarification", "data": {"task_number": result['data']['task_number']}}
@@ -113,22 +126,30 @@ async def parse_clarification(clarification_prompt: str):
         logging.error(f"Error parsing clarification: {e}")
         return {"type": "unknown", "data": {}}
     
-async def analyze_expenses(expense_data):
+async def analyze_expenses(expense_data, income_data):
     prompt = f"""
-    Проанализируй следующие данные о расходах за последнюю неделю:
+    Проанализируй следующие данные о расходах и доходах за последнюю неделю:
 
+    Расходы:
     {json.dumps(expense_data, indent=2)}
 
-    Предоставь анализ расходов, фокусируясь на следующих аспектах:
-    1. Общая сумма расходов
-    2. Основные категории расходов
-    3. Выявление потенциально необязательных или избыточных расходов
-    4. Предложения по оптимизации расходов
-    5. Сравнение с типичными расходами (если возможно)
+    Доходы:
+    {json.dumps(income_data, indent=2)}
+
+    Предоставь анализ финансов, фокусируясь на следующих аспектах:
+    1. Общая сумма доходов и расходов
+    2. Баланс (разница между доходами и расходами)
+    3. Основные категории расходов
+    4. Сравнение расходов с доходами
+    5. Выявление потенциально необязательных или избыточных расходов
+    6. Анализ сбережений (если есть)
+    7. Предложения по оптимизации расходов и увеличению сбережений
+    8. Сравнение с типичными расходами (если возможно)
 
     Не предлагай радикальных мер, таких как смена жилья или работы. 
     Сосредоточься на небольших, но эффективных изменениях в расходах.
     Будь тактичным и мотивирующим в своих рекомендациях.
+    Учитывай разные валюты в анализе.
 
     Представь анализ в виде структурированного текста, удобного для чтения в мессенджере.
     """
