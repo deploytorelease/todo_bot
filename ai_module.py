@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+def parse_date(date_string):
+    date_formats = ['%Y-%m-%d', '%d.%m.%Y', '%m/%d/%Y', '%Y/%m/%d']
+    for fmt in date_formats:
+        try:
+            return datetime.strptime(date_string, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    raise ValueError(f"Неподдерживаемый формат даты: {date_string}")
+
 async def parse_message(message_text: str):
     current_time = datetime.now().isoformat()
     prompt = f"""
@@ -47,6 +56,11 @@ async def parse_message(message_text: str):
     
     Текущее время: {current_time}
     Используй текущее время как отправную точку для расчета времени задачи.
+    Если пользователь не указал срок для цели, предложи разумный срок исходя из сложности цели.
+    Для изучения языка программирования, например, можно предложить срок от 3 до 6 месяцев.
+    - Для чтения книги - от нескольких дней до месяца, в зависимости от объема.
+    - Для сложных долгосрочных целей - до года или более.
+    Если указан срок в формате "через Х дней", рассчитай дату исходя из текущей даты.
     Если указано относительное время (например, "через 2 минуты"), рассчитай точное время от текущего момента.
     
     Текст для анализа: '{message_text}'
@@ -74,13 +88,17 @@ async def parse_message(message_text: str):
         logging.info(f"Parsed message: {result}")
 
         # Обработка даты для задач
-        if result['type'] == 'task' and 'due_date' in result['data']:
-            due_date = result['data']['due_date']
-            if 'следующие выходные' in message_text.lower():
-                # Находим дату следующей субботы
-                today = datetime.now()
-                next_saturday = today + timedelta((5 - today.weekday() + 7) % 7)
-                result['data']['due_date'] = next_saturday.strftime('%d.%m.%Y 23:59')
+        if result['type'] in ['task', 'goal']:
+            deadline = result['data'].get('deadline') or result['data'].get('due_date')
+            if deadline:
+                try:
+                    result['data']['deadline'] = parse_date(deadline)
+                except ValueError as e:
+                    logging.error(f"Failed to parse date: {e}")
+                    result['data']['deadline'] = datetime.now().strftime('%Y-%m-%d')
+            else:
+                logging.warning(f"No deadline provided for {result['type']}. Using current date.")
+                result['data']['deadline'] = datetime.now().strftime('%Y-%m-%d')
 
         if result['type'] == 'finance':
             if 'currency' not in result['data']:

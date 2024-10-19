@@ -18,8 +18,12 @@ async def send_personalized_message(bot, user_id, message_type, **kwargs):
     user = await get_user(user_id)
     message = await generate_personalized_message(user, message_type, **kwargs)
     try:
-        await bot.send_message(chat_id=user_id, text=message)
-        return True
+        if bot:
+            await bot.send_message(chat_id=user_id, text=message)
+            logger.info(f"Сообщение успешно отправлено пользователю {user_id}")
+        else:
+            logger.warning(f"Бот не предоставлен, сообщение не отправлено пользователю {user_id}")
+        return message
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
-        return False
+        return message

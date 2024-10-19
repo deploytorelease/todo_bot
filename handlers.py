@@ -16,6 +16,9 @@ import io
 from scheduler import send_task_reminder, scheduler
 from message_utils import send_personalized_message, get_user, get_task
 from models import RegularPayment
+
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -43,8 +46,8 @@ async def start_command(message: types.Message):
         "расходах или целях, и я постараюсь помочь.",
         reply_markup=ReplyKeyboardRemove()
     )
-
-async def process_message(message: types.Message, bot):
+    
+async def process_message(message: types.Message):
     user_id = message.from_user.id
     logger.info(f"Получено сообщение от пользователя {user_id}: {message.text}")
     
@@ -53,11 +56,11 @@ async def process_message(message: types.Message, bot):
         logger.info(f"Результат парсинга сообщения: {parsed_data}")
         
         if parsed_data['type'] == 'task':
-            response = await handle_task(user_id, parsed_data['data'], bot)
+            response = await handle_task(user_id, parsed_data['data'], message.bot)
         elif parsed_data['type'] == 'finance':
             response = await handle_finance(user_id, parsed_data['data'])
         elif parsed_data['type'] == 'goal':
-            response = await handle_goal(user_id, parsed_data['data'])
+            response = await handle_goal(message, parsed_data['data'])
         else:
             response = "Извините, я не смог точно определить тип вашего запроса. Можете ли вы уточнить, хотите ли вы добавить задачу, записать финансовую операцию или поставить цель?"
         
@@ -66,6 +69,8 @@ async def process_message(message: types.Message, bot):
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
         await message.answer("Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже.")
+
+
 
 async def handle_task(user_id: int, task_data: dict, bot) -> str:
     title = task_data['title']
@@ -186,7 +191,9 @@ async def add_regular_payment(user_id: int, payment_data: dict) -> str:
             logger.error(f"Ошибка при добавлении регулярного платежа для пользователя {user_id}: {e}", exc_info=True)
             return "Извините, произошла ошибка при добавлении регулярного платежа. Пожалуйста, попробуйте еще раз позже."
         
-async def handle_goal(user_id: int, goal_data: dict) -> str:
+async def handle_goal(message: types.Message, goal_data: dict) -> str:
+    user_id = message.from_user.id
+    bot = message.bot
     try:
         async with get_db() as session:
             user = await session.get(User, user_id)
@@ -195,27 +202,35 @@ async def handle_goal(user_id: int, goal_data: dict) -> str:
                 session.add(user)
                 await session.flush()
 
+            deadline = datetime.strptime(goal_data['deadline'], '%Y-%m-%d')
             new_goal = Goal(
                 user_id=user_id,
                 title=goal_data['title'],
-                deadline=datetime.strptime(goal_data['deadline'], '%d.%m.%Y')
+                deadline=deadline
             )
             session.add(new_goal)
             await session.flush()
 
-            for step_description in goal_data['steps']:
-                step = GoalStep(goal_id=new_goal.id, description=step_description)
+            steps = goal_data.get('steps', [])
+            for i, step_description in enumerate(steps, start=1):
+                step = GoalStep(goal_id=new_goal.id, description=step_description, order=i)
                 session.add(step)
 
             await session.commit()
 
-        plan = await send_personalized_message(None, user_id, 'goal_planning', goal_title=new_goal.title)
-        return f"Цель '{new_goal.title}' добавлена. Вот план по её достижению:\n\n{plan}"
+        plan = await send_personalized_message(bot, user_id, 'goal_planning', goal_title=new_goal.title)
+        
+        steps_text = "\n".join([f"{i}. {step}" for i, step in enumerate(steps, start=1)]) if steps else "Шаги не определены."
+        
+        return (f"Цель '{new_goal.title}' добавлена со сроком до {deadline.strftime('%d.%m.%Y')}.\n\n"
+                f"Шаги для достижения цели:\n{steps_text}\n\n"
+                f"Вот план по достижению цели:\n\n{plan}")
+    except ValueError as e:
+        logger.error(f"Ошибка при обработке даты для пользователя {user_id}: {e}", exc_info=True)
+        return "Извините, произошла ошибка при обработке даты для вашей цели. Пожалуйста, укажите дату в формате ГГГГ-ММ-ДД."
     except Exception as e:
         logger.error(f"Ошибка при добавлении цели для пользователя {user_id}: {e}", exc_info=True)
         return "Извините, произошла ошибка при добавлении цели. Пожалуйста, попробуйте еще раз позже."
-async def handle_unknown(user_id: int, data: dict) -> str:
-    return "Извините, я не совсем понял ваш запрос. Могу я помочь вам с задачами, финансами или целями?"
 
 # Команды управления задачами
 async def show_tasks(message: types.Message):
