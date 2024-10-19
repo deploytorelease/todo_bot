@@ -48,21 +48,7 @@ async def send_task_reminder(bot, user_id, task_id):
             message = f"🌟 Пора выполнить задачу: \"{task.title}\"."
             try:
                 await bot.send_message(chat_id=user.user_id, text=message)
-                logging.info(f"Reminder sent for task: {task.title} to user: {user.user_id}")
-
-                # Сохраняем состояние ожидания ответа
-                dp = Dispatcher.get_current()
-                state = dp.current_state(chat=user.user_id, user=user.user_id)
-                await state.set_state("waiting_for_task_completion")
-                await state.update_data(task_id=task.id, reminder_stage=1)
-                
-                # Планируем проверку ответа через 5 минут
-                scheduler.add_job(
-                    check_user_response, 
-                    'date', 
-                    run_date=datetime.now() + timedelta(minutes=5), 
-                    args=[bot, user.user_id, task.id]
-                )
+                logging.info(f"Reminder sent for task: {task.title} to user: {user.user_id} at {datetime.now()}")
             except Exception as e:
                 logging.error(f"Ошибка при отправке напоминания пользователю {user.user_id}: {e}")
 
