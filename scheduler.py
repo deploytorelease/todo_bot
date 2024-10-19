@@ -7,6 +7,14 @@ import logging
 from database import get_db
 from aiogram import Dispatcher
 from ai_module import generate_personalized_message
+from message_utils import send_personalized_message, get_user, get_task
+from sqlalchemy import func
+from ai_module import analyze_expenses
+from models import FinancialRecord
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
@@ -16,6 +24,7 @@ def start_scheduler(bot):
     scheduler.add_job(send_daily_reminders, 'cron', hour=9, minute=0, args=[bot])
     scheduler.add_job(send_upcoming_reminders, 'interval', minutes=5, args=[bot])
     scheduler.add_job(send_overdue_reminders, 'interval', minutes=30, args=[bot])
+    scheduler.add_job(weekly_expense_analysis, 'cron', day_of_week='mon', hour=9, minute=0, args=[bot])  # Новая задача
     logging.info("All jobs added to scheduler")
 
 async def send_daily_reminders(bot):
@@ -39,18 +48,62 @@ async def send_daily_reminders(bot):
 
 
 async def send_task_reminder(bot, user_id, task_id):
-    async with get_db() as session:
-        task = await session.get(Task, task_id)
-        user = await session.get(User, user_id)
+    logger.info(f"Начало отправки напоминания для задачи {task_id} пользователю {user_id}")
+    try:
+        async with get_db() as session:
+            task = await session.get(Task, task_id)
+            user = await session.get(User, user_id)
 
-        if task and not task.is_completed:
-            # Отправляем простое напоминание
-            message = f"🌟 Пора выполнить задачу: \"{task.title}\"."
-            try:
-                await bot.send_message(chat_id=user.user_id, text=message)
-                logging.info(f"Reminder sent for task: {task.title} to user: {user.user_id} at {datetime.now()}")
-            except Exception as e:
-                logging.error(f"Ошибка при отправке напоминания пользователю {user.user_id}: {e}")
+            if task and not task.is_completed:
+                logger.info(f"Задача найдена: {task.title}, статус: {'завершена' if task.is_completed else 'не завершена'}")
+                message = await generate_personalized_message(user, 'task_reminder', task_title=task.title)
+                logger.info(f"Сгенерировано сообщение: {message}")
+                
+                try:
+                    await bot.send_message(chat_id=user.user_id, text=message)
+                    logger.info(f"Напоминание отправлено для задачи: {task.title} пользователю: {user.user_id} в {datetime.now()}")
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке напоминания пользователю {user.user_id}: {e}", exc_info=True)
+            else:
+                logger.warning(f"Задача {task_id} не найдена или уже завершена")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке напоминания: {e}", exc_info=True)
+
+async def weekly_expense_analysis(bot):
+    logger.info("Начало еженедельного анализа расходов")
+    async with get_db() as session:
+        users = await session.execute(select(User))
+        users = users.scalars().all()
+
+        for user in users:
+            if user.last_expense_analysis is None or (datetime.now() - user.last_expense_analysis).days >= 7:
+                week_ago = datetime.now() - timedelta(days=7)
+                expenses = await session.execute(
+                    select(FinancialRecord)
+                    .where(FinancialRecord.user_id == user.user_id)
+                    .where(FinancialRecord.date >= week_ago)
+                )
+                expenses = expenses.scalars().all()
+
+                expense_data = [
+                    {
+                        "amount": expense.amount,
+                        "category": expense.category,
+                        "description": expense.description,
+                        "date": expense.date.isoformat()
+                    }
+                    for expense in expenses
+                ]
+
+                analysis = await analyze_expenses(expense_data)
+
+                await bot.send_message(chat_id=user.user_id, text=analysis)
+                user.last_expense_analysis = datetime.now()
+                await session.commit()
+
+    logger.info("Завершение еженедельного анализа расходов")
+
+
 
 async def check_user_response(bot, user_id, task_id):
     dp = Dispatcher.get_current()
@@ -72,35 +125,26 @@ async def check_user_response(bot, user_id, task_id):
             )
 
 async def send_motivational_reminder(bot, user_id, task_id):
-    async with get_db() as session:
-        task = await session.get(Task, task_id)
-        user = await session.get(User, user_id)
-
+    try:
+        task = await get_task(task_id)
         if task and not task.is_completed:
-            # Генерируем мотивирующее сообщение
-            message = await generate_personalized_message(user, 'motivation', task_title=task.title)
-            try:
-                await bot.send_message(chat_id=user.user_id, text=message)
-                logging.info(f"Motivational reminder sent for task: {task.title} to user: {user.user_id}")
+            await send_personalized_message(bot, user_id, 'motivation', task_title=task.title)
+            logger.info(f"Motivational reminder sent for task: {task.title} to user: {user_id}")
 
-                # Сохраняем состояние ожидания ответа
-                dp = Dispatcher.get_current()
-                state = dp.current_state(chat=user.user_id, user=user.user_id)
-                await state.set_state("waiting_for_task_completion")
-                
-                # Планируем повторную проверку ответа через 5 минут
-                scheduler.add_job(
-                    check_user_response, 
-                    'date', 
-                    run_date=datetime.now() + timedelta(minutes=5), 
-                    args=[bot, user.user_id, task.id]
-                )
-            except Exception as e:
-                logging.error(f"Ошибка при отправке мотивирующего напоминания пользователю {user.user_id}: {e}")
-        else:
-            # Если задача уже выполнена, очищаем состояние
+            # Сохраняем состояние ожидания ответа
+            dp = Dispatcher.get_current()
             state = dp.current_state(chat=user_id, user=user_id)
-            await state.finish()
+            await state.set_state("waiting_for_task_completion")
+            
+            # Планируем повторную проверку ответа через 5 минут
+            scheduler.add_job(
+                check_user_response, 
+                'date', 
+                run_date=datetime.now() + timedelta(minutes=5), 
+                args=[bot, user_id, task_id]
+            )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке мотивирующего напоминания пользователю {user_id}: {e}", exc_info=True)
 
 async def send_upcoming_reminders(bot):
     now = datetime.now()

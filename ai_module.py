@@ -7,6 +7,9 @@ import logging
 import json
 import re
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 async def parse_message(message_text: str):
@@ -109,8 +112,44 @@ async def parse_clarification(clarification_prompt: str):
     except Exception as e:
         logging.error(f"Error parsing clarification: {e}")
         return {"type": "unknown", "data": {}}
+    
+async def analyze_expenses(expense_data):
+    prompt = f"""
+    Проанализируй следующие данные о расходах за последнюю неделю:
+
+    {json.dumps(expense_data, indent=2)}
+
+    Предоставь анализ расходов, фокусируясь на следующих аспектах:
+    1. Общая сумма расходов
+    2. Основные категории расходов
+    3. Выявление потенциально необязательных или избыточных расходов
+    4. Предложения по оптимизации расходов
+    5. Сравнение с типичными расходами (если возможно)
+
+    Не предлагай радикальных мер, таких как смена жилья или работы. 
+    Сосредоточься на небольших, но эффективных изменениях в расходах.
+    Будь тактичным и мотивирующим в своих рекомендациях.
+
+    Представь анализ в виде структурированного текста, удобного для чтения в мессенджере.
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful financial advisor."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1000,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Ошибка при анализе расходов: {e}", exc_info=True)
+        return "Извините, произошла ошибка при анализе расходов. Пожалуйста, попробуйте позже."
 
 async def generate_personalized_message(user, message_type, **kwargs):
+    logger.info(f"Генерация персонализированного сообщения для пользователя {user.user_id}, тип: {message_type}")
     tone = user.tone if hasattr(user, 'tone') else 'neutral'
     role = user.role if hasattr(user, 'role') else 'assistant'
 
@@ -154,6 +193,7 @@ async def generate_personalized_message(user, message_type, **kwargs):
             max_tokens=250,
             temperature=0.7
         )
+        logger.info(f"Получено сообщение от OpenAI API: {response.choices[0].message.content.strip()}")
         return response.choices[0].message.content.strip()
     except Exception as e:
         logging.error(f"Ошибка при обращении к OpenAI API: {e}")

@@ -15,10 +15,10 @@ class User(Base):
     role = Column(String, default='assistant')
     learning_topic = Column(String, nullable=True)
     learning_progress = Column(Integer, default=0)
-
     tasks = relationship("Task", back_populates="owner")
     financial_records = relationship("FinancialRecord", back_populates="owner")
     goals = relationship("Goal", back_populates="owner")
+    last_expense_analysis = Column(DateTime, nullable=True)
 
 class Task(Base):
     __tablename__ = 'tasks'

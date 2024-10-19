@@ -14,6 +14,10 @@ import logging
 import matplotlib.pyplot as plt
 import io
 from scheduler import send_task_reminder, scheduler
+from message_utils import send_personalized_message, get_user, get_task
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Состояния FSM
 class TaskStates(StatesGroup):
@@ -42,22 +46,26 @@ async def start_command(message: types.Message):
 
 async def process_message(message: types.Message, bot):
     user_id = message.from_user.id
-    parsed_data = await parse_message(message.text)
+    logger.info(f"Получено сообщение от пользователя {user_id}: {message.text}")
     
     try:
+        parsed_data = await parse_message(message.text)
+        logger.info(f"Результат парсинга сообщения: {parsed_data}")
+        
         if parsed_data['type'] == 'task':
             response = await handle_task(user_id, parsed_data['data'], bot)
         elif parsed_data['type'] == 'finance':
-            response = await handle_finance(user_id, parsed_data['data'], bot)
+            response = await handle_finance(user_id, parsed_data['data'])
         elif parsed_data['type'] == 'goal':
-            response = await handle_goal(user_id, parsed_data['data'], bot)
+            response = await handle_goal(user_id, parsed_data['data'])
         else:
             response = "Извините, я не смог точно определить тип вашего запроса. Можете ли вы уточнить, хотите ли вы добавить задачу, записать финансовую операцию или поставить цель?"
+        
+        logger.info(f"Сгенерирован ответ: {response}")
+        await message.answer(response)
     except Exception as e:
-        logging.error(f"Ошибка при обработке сообщения: {e}")
-        response = "Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."
-
-    await message.answer(response)
+        logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
+        await message.answer("Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже.")
 
 async def handle_task(user_id: int, task_data: dict, bot) -> str:
     title = task_data['title']
@@ -115,17 +123,17 @@ async def handle_task(user_id: int, task_data: dict, bot) -> str:
             return "Извините, произошла ошибка при добавлении задачи. Пожалуйста, попробуйте еще раз позже."
         
 async def handle_finance(user_id: int, finance_data: dict) -> str:
+    logger.info(f"Обработка финансовой операции для пользователя {user_id}: {finance_data}")
     async with get_db() as session:
         try:
-            # Проверяем существование пользователя
             user = await session.execute(select(User).where(User.user_id == user_id))
             user = user.scalar_one_or_none()
 
             if not user:
-                # Если пользователь не существует, создаем его
                 user = User(user_id=user_id)
                 session.add(user)
                 await session.flush()
+                logger.info(f"Создан новый пользователь с id {user_id}")
 
             new_record = FinancialRecord(
                 user_id=user_id,
@@ -134,71 +142,44 @@ async def handle_finance(user_id: int, finance_data: dict) -> str:
                 description=finance_data['description']
             )
             session.add(new_record)
-            await session.flush()
-
-            # Анализ расходов
-            month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            total_month_expenses = await session.scalar(
-                select(func.sum(FinancialRecord.amount)).where(
-                    FinancialRecord.user_id == user_id,
-                    FinancialRecord.date >= month_start
-                )
-            ) or 0
-
-            category_expenses = await session.execute(
-                select(FinancialRecord.category, func.sum(FinancialRecord.amount))
-                .where(FinancialRecord.user_id == user_id, FinancialRecord.date >= month_start)
-                .group_by(FinancialRecord.category)
-            )
-            category_breakdown = dict(category_expenses.all())
-
             await session.commit()
+            logger.info(f"Добавлена новая финансовая запись: {new_record}")
 
-            advice = await generate_personalized_message(user, 'financial_advice', recent_expenses=category_breakdown)
-
-            return (f"Записал расход: {new_record.amount} в категории {new_record.category}.\n\n"
-                    f"Всего в этом месяце потрачено: {total_month_expenses:.2f}\n\n"
-                    f"Совет по экономии: {advice}")
+            return f"Записал расход: {new_record.amount} {finance_data.get('currency', 'у.е.')} в категории {new_record.category}."
 
         except Exception as e:
             await session.rollback()
-            logging.error(f"Ошибка при добавлении финансовой записи: {e}")
+            logger.error(f"Ошибка при добавлении финансовой записи для пользователя {user_id}: {e}", exc_info=True)
             return "Извините, произошла ошибка при добавлении финансовой записи. Пожалуйста, попробуйте еще раз позже."
-
+        
 async def handle_goal(user_id: int, goal_data: dict) -> str:
-    async with get_db() as session:
-        # Проверяем существование пользователя
-        user = await session.execute(select(User).where(User.user_id == user_id))
-        user = user.scalar_one_or_none()
+    try:
+        async with get_db() as session:
+            user = await session.get(User, user_id)
+            if not user:
+                user = User(user_id=user_id)
+                session.add(user)
+                await session.flush()
 
-        if not user:
-            # Если пользователь не существует, создаем его
-            user = User(user_id=user_id)
-            session.add(user)
+            new_goal = Goal(
+                user_id=user_id,
+                title=goal_data['title'],
+                deadline=datetime.strptime(goal_data['deadline'], '%d.%m.%Y')
+            )
+            session.add(new_goal)
             await session.flush()
 
-        new_goal = Goal(
-            user_id=user_id,
-            title=goal_data['title'],
-            deadline=datetime.strptime(goal_data['deadline'], '%d.%m.%Y')
-        )
-        session.add(new_goal)
-        await session.flush()
+            for step_description in goal_data['steps']:
+                step = GoalStep(goal_id=new_goal.id, description=step_description)
+                session.add(step)
 
-        for step_description in goal_data['steps']:
-            step = GoalStep(goal_id=new_goal.id, description=step_description)
-            session.add(step)
-
-        try:
             await session.commit()
-        except Exception as e:
-            await session.rollback()
-            logging.error(f"Ошибка при добавлении цели: {e}")
-            return "Извините, произошла ошибка при добавлении цели. Пожалуйста, попробуйте еще раз позже."
 
-    plan = await generate_personalized_message(user_id, 'goal_planning', goal_title=new_goal.title)
-    return f"Цель '{new_goal.title}' добавлена. Вот план по её достижению:\n\n{plan}"
-
+        plan = await send_personalized_message(None, user_id, 'goal_planning', goal_title=new_goal.title)
+        return f"Цель '{new_goal.title}' добавлена. Вот план по её достижению:\n\n{plan}"
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении цели для пользователя {user_id}: {e}", exc_info=True)
+        return "Извините, произошла ошибка при добавлении цели. Пожалуйста, попробуйте еще раз позже."
 async def handle_unknown(user_id: int, data: dict) -> str:
     return "Извините, я не совсем понял ваш запрос. Могу я помочь вам с задачами, финансами или целями?"
 
@@ -358,14 +339,19 @@ async def suggest_resources(message: types.Message):
 
 async def financial_advice_command(message: types.Message):
     user_id = message.from_user.id
-    async with get_db() as session:
-        financial_records = await session.execute(
-            select(FinancialRecord).where(FinancialRecord.user_id == user_id)
-        )
-        records = financial_records.scalars().all()
-    
-    advice = await generate_personalized_message(user_id, 'financial_advice', records=records)
-    await message.answer(advice)
+    try:
+        async with get_db() as session:
+            user = await session.get(User, user_id)
+            financial_records = await session.execute(
+                select(FinancialRecord).where(FinancialRecord.user_id == user_id)
+            )
+            records = financial_records.scalars().all()
+        
+        advice = await send_personalized_message(message.bot, user_id, 'financial_advice', records=records)
+        await message.answer(advice)
+    except Exception as e:
+        logger.error(f"Ошибка при генерации финансового совета для пользователя {user_id}: {e}", exc_info=True)
+        await message.answer("Извините, произошла ошибка при генерации финансового совета. Пожалуйста, попробуйте позже.")
 
 async def visualize_goals(message: types.Message):
     user_id = message.from_user.id
