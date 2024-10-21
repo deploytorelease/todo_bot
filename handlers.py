@@ -251,41 +251,11 @@ async def show_tasks(message: types.Message):
 
     await message.answer(response)
 
-async def edit_task_command(message: types.Message, state: FSMContext):
-    await state.set_state
 
 async def edit_task_command(message: types.Message, state: FSMContext):
     await state.set_state(EditTaskStates.waiting_for_task_id)
     await message.answer("Укажите ID задачи для редактирования. Посмотреть задачи можно командой /tasks.")
 
-async def task_id_received(message: types.Message, state: FSMContext):
-    await state.update_data(task_id=message.text)
-    await state.set_state(EditTaskStates.waiting_for_new_title)
-    await message.answer("Введите новый заголовок задачи (или 'пропустить').")
-
-async def new_title_received(message: types.Message, state: FSMContext):
-    await state.update_data(new_title=None if message.text.lower() == 'пропустить' else message.text)
-    await state.set_state(EditTaskStates.waiting_for_new_due_date)
-    await message.answer("Введите новую дату и время задачи в формате 'ДД.ММ.ГГГГ ЧЧ:ММ' (или 'пропустить').")
-
-async def new_due_date_received(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    task_id = int(user_data['task_id'])
-    new_title = user_data['new_title']
-    new_due_date = None if message.text.lower() == 'пропустить' else datetime.strptime(message.text, '%d.%m.%Y %H:%M')
-
-    async with get_db() as session:
-        task = await session.get(Task, task_id)
-        if task and task.user_id == message.from_user.id:
-            if new_title:
-                task.title = new_title
-            if new_due_date:
-                task.due_date = new_due_date
-            await session.commit()
-            await message.answer("Задача успешно обновлена.")
-        else:
-            await message.answer("Задача не найдена.")
-    await state.clear()
 
 async def complete_task_command(message: types.Message):
     task_description = message.get_args()
@@ -437,10 +407,6 @@ def register_handlers(router: Router):
     router.message.register(suggest_resources, Command("resources"))
     router.message.register(financial_advice_command, Command("financial_advice"))
     router.message.register(visualize_goals, Command("visualize_goals"))
-    
-    router.message.register(task_id_received, EditTaskStates.waiting_for_task_id)
-    router.message.register(new_title_received, EditTaskStates.waiting_for_new_title)
-    router.message.register(new_due_date_received, EditTaskStates.waiting_for_new_due_date)
     router.message.register(tone_selected, ToneStates.waiting_for_tone)
     router.message.register(topic_received, LearningStates.waiting_for_topic)
     

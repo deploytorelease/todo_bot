@@ -13,10 +13,10 @@ logger = logging.getLogger(__name__)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 def parse_date(date_string):
-    date_formats = ['%Y-%m-%d', '%d.%m.%Y', '%m/%d/%Y', '%Y/%m/%d']
+    date_formats = ['%Y-%m-%d', '%d.%m.%Y', '%m/%d/%Y', '%Y/%m/%d', '%Y-%m-%dT%H:%M:%S']
     for fmt in date_formats:
         try:
-            return datetime.strptime(date_string, fmt).strftime('%Y-%m-%d')
+            return datetime.strptime(date_string, fmt).strftime('%Y-%m-%d %H:%M:%S')
         except ValueError:
             continue
     raise ValueError(f"Неподдерживаемый формат даты: {date_string}")
@@ -121,28 +121,6 @@ async def parse_message(message_text: str):
         logging.error(f"Error parsing message: {e}")
         return {"type": "unknown", "data": {}}
     
-
-async def parse_clarification(clarification_prompt: str):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that clarifies user intentions."},
-                {"role": "user", "content": clarification_prompt}
-            ]
-        )
-
-        content = response.choices[0].message.content.strip()
-        
-        # Извлекаем номер задачи из ответа
-        task_number_match = re.search(r'\d+', content)
-        if task_number_match:
-            return {"type": "clarification", "data": {"task_number": int(task_number_match.group())}}
-        else:
-            return {"type": "unknown", "data": {}}
-    except Exception as e:
-        logging.error(f"Error parsing clarification: {e}")
-        return {"type": "unknown", "data": {}}
     
 async def analyze_expenses(expense_data, income_data):
     prompt = f"""
