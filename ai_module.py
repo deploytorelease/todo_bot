@@ -168,23 +168,16 @@ async def generate_goal_steps(goal_title: str, deadline: datetime, user_experien
     """
     Генерирует план достижения цели с учетом опыта пользователя и доступного времени
     """
-    experience_level = "начинающий" if not user_experience else user_experience
-    time_available = "средний" if not available_time else available_time
-    
     prompt = f"""
     Создай детальный план достижения цели "{goal_title}" до {deadline.strftime('%d.%m.%Y')}.
-    Опыт пользователя: {experience_level}
-    Доступное время: {time_available}
+    План должен учитывать:
+    - Уровень пользователя: {user_experience}
+    - Доступное время: {available_time}
     
-    Создай план, учитывая:
-    1. Структура задач:
-        - Конкретные, измеримые результаты
-        - Четкие критерии завершения
-        - Практические задания
-    2. Временные рамки:
-        - Реалистичные сроки
-        - Возможность параллельного выполнения
-        - Промежуточные проверки
+    Проанализируй цель и определи:
+    1. Сложность каждого этапа (множитель от 0.5 до 2.0)
+    2. Зависимости между этапами
+    3. Оптимальное распределение времени
     
     Верни результат в формате JSON:
     {{
@@ -192,11 +185,19 @@ async def generate_goal_steps(goal_title: str, deadline: datetime, user_experien
             {{
                 "title": "название задачи",
                 "description": "подробное описание",
+                "complexity_factor": число от 0.5 до 2.0,
                 "duration": количество_дней,
                 "can_parallel": true/false,
                 "deliverables": ["конкретные результаты"],
                 "resources": ["материалы и инструменты"],
                 "dependencies": []
+            }}
+        ],
+        "milestones": [
+            {{
+                "title": "название этапа",
+                "percentage": процент выполнения цели,
+                "criteria": ["критерии успеха"]
             }}
         ]
     }}
@@ -296,23 +297,26 @@ def optimize_task_schedule(tasks: list, deadline: datetime) -> list:
     
     return schedule
 
-def generate_checkpoints(schedule: list, checkpoints: list) -> list:
+def generate_checkpoints(schedule: list, total_duration: timedelta) -> list:
     """
     Генерирует промежуточные точки проверки прогресса
     """
-    milestones = []
-    total_duration = sum(task['duration'] for task in schedule)
-    
-    for checkpoint in checkpoints:
-        milestone = {
-            'title': checkpoint['milestone'],
-            'date': datetime.fromisoformat(checkpoint['expected_date']),
-            'criteria': checkpoint['success_criteria'],
-            'tasks_to_complete': get_tasks_for_milestone(schedule, checkpoint['expected_date'])
+    start_date = datetime.now()
+    mid_date = start_date + (total_duration / 2)
+    end_date = start_date + total_duration
+
+    return [
+        {
+            'title': 'Промежуточная проверка',
+            'date': mid_date,
+            'criteria': ['Выполнено 50% задач', 'Созданы базовые проекты']
+        },
+        {
+            'title': 'Финальная проверка',
+            'date': end_date,
+            'criteria': ['Выполнены все задачи', 'Достигнуты все цели обучения']
         }
-        milestones.append(milestone)
-    
-    return milestones
+    ]
 
 def find_critical_path(graph: dict) -> list:
     """
@@ -347,7 +351,7 @@ async def generate_personalized_message(user, message_type, **kwargs):
 
     prompt = f"Выступая в роли {role} и используя {tone} тон общения, "
 
-    if message_type == 'reminder':
+    if message_type == 'task_reminder':
         task_title = kwargs.get('task_title')
         is_overdue = kwargs.get('is_overdue', False)
         if is_overdue:
@@ -372,8 +376,8 @@ async def generate_personalized_message(user, message_type, **kwargs):
         topic = kwargs.get('topic')
         prompt += f"предложи полезные ресурсы для изучения темы '{topic}', включая книги, онлайн-курсы и практические задания."
     else:
-        logging.error("Неизвестный тип сообщения.")
-        return "Ошибка: неизвестный тип сообщения."
+        logging.error(f"Неизвестный тип сообщения: {message_type}")
+        return "Напоминание о задаче"  # Возвращаем базовое сообщение вместо ошибки
 
     try:
         response = client.chat.completions.create(
@@ -389,4 +393,4 @@ async def generate_personalized_message(user, message_type, **kwargs):
         return response.choices[0].message.content.strip()
     except Exception as e:
         logging.error(f"Ошибка при обращении к OpenAI API: {e}")
-        return "Извините, произошла ошибка при генерации сообщения."
+        return f"Напоминание о задаче: {kwargs.get('task_title', '')}"  # Возвращаем базовое сообщение в случае ошибки

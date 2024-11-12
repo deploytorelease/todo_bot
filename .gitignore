@@ -1,3 +1,17 @@
 myenv
 __pycache__
 .env
+*.dev.env
+*.test.env
+*.prod.env
+*.db
+.env.dev
+.env.test
+.env.prod
+*.db
+*.db.dev
+*.db.test
+*.db.prod
+database_schema.md
+init_databases.sql
+/tests/

@@ -4,9 +4,9 @@ from aiogram import types, Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, FSInputFile
+from aiogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton
 from database import get_db
-from models import User, Task, CompletedTask, FinancialRecord, Goal, GoalStep
+from models import User, Task, CompletedTask, FinancialRecord, Goal, TaskCategory, Milestone, RegularPayment
 from ai_module import parse_message, generate_personalized_message, generate_goal_steps
 from datetime import datetime, timedelta
 from sqlalchemy import select, func
@@ -15,8 +15,11 @@ import matplotlib.pyplot as plt
 import io
 from scheduler import send_task_reminder, scheduler
 from message_utils import send_personalized_message, get_user, get_task
-from models import RegularPayment, Milestone
 import json
+from aiogram.filters import Command, CommandObject
+from tone import get_message
+
+
 
 
 
@@ -145,24 +148,28 @@ async def process_available_time(message: types.Message, state: FSMContext):
     await state.clear()
 
 def calculate_deadline(experience: str, available_time: str) -> datetime:
-    # Логика расчета дедлайна на основе опыта и доступного времени
+    """
+    Рассчитывает общий срок на основе опыта и доступного времени
+    """
     base_days = {
-        "1": 365,  # Новичок
-        "2": 270,  # Базовые знания
-        "3": 180,  # Средний уровень
-        "4": 90    # Продвинутый
+        "1": 180,  # Новичок - полгода
+        "2": 120,  # Базовые знания - 4 месяца
+        "3": 90,   # Средний уровень - 3 месяца
+        "4": 60    # Продвинутый - 2 месяца
     }
     
     time_multiplier = {
-        "1": 1.5,  # 1-2 часа
-        "2": 1.0,  # 3-5 часов
-        "3": 0.7,  # 6-10 часов
-        "4": 0.5   # Более 10 часов
+        "1": 2.0,  # 1-2 часа - нужно в 2 раза больше времени
+        "2": 1.5,  # 3-5 часов
+        "3": 1.2,  # 6-10 часов
+        "4": 1.0   # Более 10 часов
     }
     
-    days = base_days.get(experience, 365) * time_multiplier.get(available_time, 1.0)
-    return datetime.now() + timedelta(days=days)
-
+    base = base_days.get(experience, 180)
+    multiplier = time_multiplier.get(available_time, 1.5)
+    total_days = int(base * multiplier)
+    
+    return datetime.now() + timedelta(days=total_days)
 def format_goal_plan(plan: dict) -> str:
     """Форматирует план в читаемый вид"""
     response = ["План достижения цели:\n"]
@@ -200,6 +207,17 @@ async def process_message(message: types.Message):
     logger.info(f"Получено сообщение от пользователя {user_id}: {message.text}")
     
     try:
+        # Получаем тон общения пользователя
+        async with get_db() as session:
+            user = await session.execute(select(User).where(User.user_id == user_id))
+            user = user.scalar_one_or_none()
+            if not user:
+                user = User(user_id=user_id, tone='neutral')
+                session.add(user)
+                await session.commit()
+            
+            user_tone = user.tone
+        
         parsed_data = await parse_message(message.text)
         logger.info(f"Результат парсинга сообщения: {parsed_data}")
         
@@ -210,21 +228,24 @@ async def process_message(message: types.Message):
         elif parsed_data['type'] == 'goal':
             response = await handle_goal(message, parsed_data['data'])
         else:
-            response = "Извините, я не смог точно определить тип вашего запроса. Можете ли вы уточнить, хотите ли вы добавить задачу, записать финансовую операцию или поставить цель?"
+            # Используем тон пользователя для ответа
+            response = get_message(user_tone, 'clarification',
+                message="Извините, я не смог точно определить тип вашего запроса. " +
+                "Можете уточнить, хотите ли вы добавить задачу, записать финансовую операцию или поставить цель?")
         
         logger.info(f"Сгенерирован ответ: {response}")
         await message.answer(response)
+        
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
-        await message.answer("Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже.")
-
+        await message.answer(get_message(user_tone if 'user_tone' in locals() else 'neutral', 'error',
+            message="Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз позже."))
 
 
 async def handle_task(user_id: int, task_data: dict, bot) -> str:
     title = task_data['title']
     due_date = datetime.fromisoformat(task_data['due_date'])
     priority = task_data.get('priority', 'medium')
-    category = task_data.get('category', 'Общее')
 
     async with get_db() as session:
         try:
@@ -233,9 +254,23 @@ async def handle_task(user_id: int, task_data: dict, bot) -> str:
             user = user.scalar_one_or_none()
 
             if not user:
-                # Если пользователь не существует, создаем его
                 user = User(user_id=user_id)
                 session.add(user)
+                await session.flush()
+            
+            # Ищем или создаем категорию
+            category_name = task_data.get('category', 'Общее')
+            category = await session.execute(
+                select(TaskCategory).where(TaskCategory.name == category_name)
+            )
+            category = category.scalar_one_or_none()
+            
+            if not category:
+                category = TaskCategory(
+                    name=category_name,
+                    description=f"Категория для задач типа {category_name}"
+                )
+                session.add(category)
                 await session.flush()
 
             # Создаем новую задачу
@@ -244,11 +279,12 @@ async def handle_task(user_id: int, task_data: dict, bot) -> str:
                 title=title, 
                 due_date=due_date,
                 priority=priority,
-                category=category
+                category_id=category.id  # Используем category_id вместо category
             )
             session.add(new_task)
             await session.commit()
-            logging.info(f"New task added: {new_task.title}, due date: {new_task.due_date}")
+            
+            logger.info(f"New task added: {new_task.title}, due date: {new_task.due_date}")
 
             # Добавляем джоб в планировщик
             job = scheduler.add_job(
@@ -258,23 +294,19 @@ async def handle_task(user_id: int, task_data: dict, bot) -> str:
                 args=[bot, user.user_id, new_task.id]
             )
             new_task.scheduler_job_id = job.id
-
             await session.commit()
-            logging.info(f"New task added: {new_task.title}, due date: {new_task.due_date}")
-
 
             return (f"Отлично! Я добавил новую задачу:\n"
                     f"Название: {title}\n"
                     f"Срок: {due_date.strftime('%d.%m.%Y %H:%M')}\n"
                     f"Приоритет: {priority}\n"
-                    f"Категория: {category}\n\n"
+                    f"Категория: {category_name}\n\n"
                     f"Я напомню вам о ней ближе к сроку. Хотите добавить еще что-нибудь?")
 
         except Exception as e:
             await session.rollback()
-            logging.error(f"Ошибка при добавлении задачи: {e}")
+            logger.error(f"Ошибка при добавлении задачи: {e}")
             return "Извините, произошла ошибка при добавлении задачи. Пожалуйста, попробуйте еще раз позже."
-        
 async def handle_finance(user_id: int, finance_data: dict) -> str:
     logger.info(f"Обработка финансовой операции для пользователя {user_id}: {finance_data}")
     async with get_db() as session:
@@ -359,7 +391,10 @@ async def handle_goal(message: types.Message, goal_data: dict) -> str:
                 deadline=deadline,
                 description=goal_data.get('description', ''),
                 user_experience=goal_data.get('experience', 'beginner'),
-                available_time=goal_data.get('available_time', 'medium')
+                available_time=goal_data.get('available_time', 'medium'),
+                # Убираем completion_date пока не добавим колонку в БД
+                status='active',
+                priority=1
             )
             session.add(new_goal)
             await session.flush()
@@ -399,7 +434,6 @@ async def handle_goal(message: types.Message, goal_data: dict) -> str:
     except Exception as e:
         logger.error(f"Ошибка при создании цели: {e}", exc_info=True)
         return "Произошла ошибка при создании плана. Пожалуйста, попробуйте еще раз."
-    
 
 async def update_task_deadline(task: Task, session):
     """
@@ -446,7 +480,7 @@ async def show_tasks(message: types.Message):
 
     if tasks:
         response = "Ваши текущие задачи:\n" + "\n".join(
-            f"ID: {task.id}, Заголовок: {task.title}, Срок: {task.due_date.strftime('%d.%m.%Y %H:%M')}"
+            f"• {task.title}, Срок: {task.due_date.strftime('%d.%m.%Y %H:%M')}"
             for task in tasks
         )
     else:
@@ -489,17 +523,111 @@ async def update_goal_progress(goal_id: int, session):
         logger.error(f"Ошибка при обновлении прогресса цели: {e}")
         await session.rollback()
 
+async def send_task_reminder(bot, user_id, task_id):
+    logger.info(f"Начало отправки напоминания для задачи {task_id} пользователю {user_id}")
+    try:
+        async with get_db() as session:
+            task = await session.get(Task, task_id)
+            user = await session.get(User, user_id)
 
-async def complete_task_command(message: types.Message):
-    task_id = message.get_args()
-    if not task_id.isdigit():
-        await message.answer("Пожалуйста, укажите ID задачи")
+            if task and not task.is_completed:
+                message = await generate_personalized_message(user, 'task_reminder', task_title=task.title)
+                
+                # Создаем клавиатуру с кнопкой завершения
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Выполнено", callback_data=f"complete_{task_id}")]
+                ])
+                
+                try:
+                    await bot.send_message(
+                        chat_id=user.user_id, 
+                        text=message,
+                        reply_markup=keyboard
+                    )
+                    logger.info(f"Напоминание отправлено для задачи: {task.title}")
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке напоминания: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке напоминания: {e}")
+
+async def handle_task_callback(callback: types.CallbackQuery):
+    """Обработчик всех callback-кнопок для задач"""
+    try:
+        action, task_id = callback.data.split('_', 1)
+        if '_' in task_id:  # Для действий с дополнительными параметрами
+            task_id, *params = task_id.split('_')
+        task_id = int(task_id)
+        
+        async with get_db() as session:
+            task = await session.get(Task, task_id)
+            if not task:
+                await callback.answer("Задача не найдена")
+                return
+                
+            if task.user_id != callback.from_user.id:
+                await callback.answer("У вас нет доступа к этой задаче")
+                return
+            
+            if action == 'complete':
+                task.is_completed = True
+                task.completion_date = datetime.now()
+                message = "✅ Задача выполнена!"
+                
+            elif action == 'remind':
+                hours = int(params[0][:-1])  # Убираем 'h' из строки
+                next_reminder = datetime.now() + timedelta(hours=hours)
+                task.next_reminder = next_reminder
+                message = f"⏰ Напомню через {hours} час(ов)"
+                
+            elif action == 'postpone':
+                days = int(params[0][:-1])  # Убираем 'd' из строки
+                task.due_date = datetime.now() + timedelta(days=days)
+                message = f"📅 Задача перенесена на {task.due_date.strftime('%d.%m.%Y')}"
+                
+            elif action == 'cancel':
+                # Не удаляем задачу, а помечаем как отмененную
+                task.is_cancelled = True
+                task.cancellation_date = datetime.now()
+                task.cancellation_reason = "Отменено пользователем"
+                message = "❌ Задача отменена"
+            
+            await session.commit()
+            
+            # Обновляем сообщение, убирая кнопки
+            await callback.message.edit_text(
+                f"{callback.message.text}\n\n{message}",
+                reply_markup=None
+            )
+            await callback.answer(message)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при обработке callback: {e}")
+        await callback.answer("Произошла ошибка при обработке действия")
+
+
+async def complete_task_command(message: types.Message, command: CommandObject):
+    """
+    Обработчик команды /complete
+    Пример использования: /complete 1
+    """
+    if not command.args:
+        await message.answer("Пожалуйста, укажите ID задачи после команды /complete\nНапример: /complete 1")
+        return
+
+    try:
+        task_id = int(command.args)
+    except ValueError:
+        await message.answer("ID задачи должен быть числом")
         return
 
     async with get_db() as session:
-        task = await session.get(Task, int(task_id))
+        task = await session.get(Task, task_id)
         if not task:
             await message.answer("Задача не найдена")
+            return
+
+        if task.user_id != message.from_user.id:
+            await message.answer("У вас нет доступа к этой задаче")
             return
 
         # Проверяем, можно ли выполнить эту задачу (все предыдущие должны быть выполнены)
@@ -525,28 +653,60 @@ async def complete_task_command(message: types.Message):
             await update_goal_progress(task.goal_id, session)
 
         await message.answer(f"Задача '{task.title}' отмечена как выполненная")
+
 # Настройки пользователя
-async def set_tone_command(message: types.Message):
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("Нейтральный", "Дружелюбный", "Строгий")
-    await ToneStates.waiting_for_tone.set()
+async def set_tone_command(message: types.Message, state: FSMContext):
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="Нейтральный"),
+                KeyboardButton(text="Дружелюбный")
+            ],
+            [
+                KeyboardButton(text="Строгий"),
+                KeyboardButton(text="Саркастичный")
+            ],
+            [
+                KeyboardButton(text="Любящая мама"),
+                KeyboardButton(text="Дружбан")
+            ]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await state.set_state(ToneStates.waiting_for_tone)
     await message.answer("Выберите тон общения:", reply_markup=keyboard)
 
 async def tone_selected(message: types.Message, state: FSMContext):
-    tone_mapping = {"Нейтральный": "neutral", "Дружелюбный": "friendly", "Строгий": "strict"}
+    tone_mapping = {
+        "Нейтральный": "neutral",
+        "Дружелюбный": "friendly",
+        "Строгий": "strict",
+        "Саркастичный": "sarcastic",
+        "Любящая мама": "loving_mom",
+        "Дружбан": "buddy"
+    }
     selected_tone = tone_mapping.get(message.text)
+    
     if selected_tone:
         async with get_db() as session:
-            user = await session.get(User, message.from_user.id)
-            if user:
-                user.tone = selected_tone
-                await session.commit()
-                await message.answer("Тон общения обновлен.", reply_markup=ReplyKeyboardRemove())
-            else:
-                await message.answer("Пользователь не найден.", reply_markup=ReplyKeyboardRemove())
-        await state.clear()
+            user = await session.execute(select(User).where(User.user_id == message.from_user.id))
+            user = user.scalar_one_or_none()
+            
+            if not user:
+                user = User(user_id=message.from_user.id)
+                session.add(user)
+            
+            user.tone = selected_tone
+            await session.commit()
+            
+            response = get_message(selected_tone, 'tone_updated',
+                message="Тон общения успешно обновлен")
+            await message.answer(response, reply_markup=ReplyKeyboardRemove())
     else:
         await message.answer("Пожалуйста, выберите тон из предложенных вариантов.")
+    
+    await state.clear()
 
 # Обучение
 async def learn_command(message: types.Message, state: FSMContext):
@@ -637,7 +797,7 @@ def register_handlers(router: Router):
     router.message.register(process_goal_title, GoalCreationStates.waiting_for_title)
     router.message.register(process_experience, GoalCreationStates.waiting_for_experience)
     router.message.register(process_available_time, GoalCreationStates.waiting_for_available_time)
-
-    
-    # Обработка всех текстовых сообщений
+    router.callback_query.register(handle_task_callback, F.data.startswith("complete_"))
+    router.message.register(tone_selected, ToneStates.waiting_for_tone)
+    router.message.register(topic_received, LearningStates.waiting_for_topic)
     router.message.register(process_message, F.content_type == types.ContentType.TEXT)
