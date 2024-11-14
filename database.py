@@ -8,7 +8,8 @@ from models import Base
 from contextlib import asynccontextmanager
 import asyncio
 import logging
-
+from base import Base
+from sqlalchemy.exc import SQLAlchemyError
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,24 +29,18 @@ async def init_db():
 
 @asynccontextmanager
 async def get_db():
-    for attempt in range(3):  # Попытаемся подключиться 3 раза
+    for attempt in range(3):  # Попытки подключения
         try:
             async with async_sessionmaker() as session:
-                try:
-                    yield session
-                    await session.commit()
-                except Exception:
-                    await session.rollback()
-                    raise
-                finally:
-                    await session.close()
-            break  # Если успешно подключились и выполнили операции, выходим из цикла
-        except Exception as e:
-            if attempt == 2:  # Если это была последняя попытка
+                yield session
+            break  # Успешное подключение, выходим из цикла
+        except SQLAlchemyError as e:
+            if attempt == 2:
                 logger.error(f"Не удалось подключиться к базе данных после 3 попыток: {e}")
                 raise
-            logger.warning(f"Ошибка подключения к базе данных, попытка {attempt + 1}: {e}")
-            await asyncio.sleep(1)  # Подождем секунду перед следующей попыткой
+            else:
+                logger.warning(f"Ошибка подключения к базе данных, попытка {attempt + 1}: {e}")
+                await asyncio.sleep(1)
 
 async def close_db():
     await engine.dispose()

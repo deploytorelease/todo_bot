@@ -4,28 +4,48 @@ from aiogram import types, Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup, 
+    ReplyKeyboardRemove, 
+    FSInputFile, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup, 
+    KeyboardButton
+)
 from database import get_db
-from models import User, Task, CompletedTask, FinancialRecord, Goal, TaskCategory, Milestone, RegularPayment
-from ai_module import parse_message, generate_personalized_message, generate_goal_steps
+from models import (
+    User, 
+    Task, 
+    CompletedTask, 
+    FinancialRecord, 
+    Goal, 
+    TaskCategory, 
+    Milestone, 
+    RegularPayment
+)
+from ai_module import parse_message, generate_goal_steps
+from message_utils import generate_message, send_personalized_message
 from datetime import datetime, timedelta
 from sqlalchemy import select, func
 import logging
 import matplotlib.pyplot as plt
 import io
 from scheduler import send_task_reminder, scheduler
-from message_utils import send_personalized_message, get_user, get_task
 import json
 from aiogram.filters import Command, CommandObject
 from tone import get_message
-
-
-
-
+from dialog_manager import (
+    DialogStates, 
+    start_dialog_mode, 
+    handle_dialog_action, 
+    handle_user_dialog_message
+)
+from tone import get_message
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # Состояния FSM
 class TaskStates(StatesGroup):
@@ -530,23 +550,37 @@ async def send_task_reminder(bot, user_id, task_id):
             task = await session.get(Task, task_id)
             user = await session.get(User, user_id)
 
-            if task and not task.is_completed:
-                message = await generate_personalized_message(user, 'task_reminder', task_title=task.title)
-                
-                # Создаем клавиатуру с кнопкой завершения
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ Выполнено", callback_data=f"complete_{task_id}")]
-                ])
-                
-                try:
-                    await bot.send_message(
-                        chat_id=user.user_id, 
-                        text=message,
-                        reply_markup=keyboard
-                    )
-                    logger.info(f"Напоминание отправлено для задачи: {task.title}")
-                except Exception as e:
-                    logger.error(f"Ошибка при отправке напоминания: {e}")
+        if task and not task.is_completed:
+            # Генерируем сообщение
+            message_data = {
+                'task_title': task.title,
+                'due_date': task.due_date.strftime('%d.%m.%Y %H:%M')
+            }
+            message = await generate_message(
+                user_id,
+                'task_reminder_regular',
+                **message_data
+            )
+            logger.info(f"Сгенерированное сообщение: {message}")
+
+            if not message.strip():
+                logger.error("Сгенерированное сообщение пустое")
+                message = "Напоминание о задаче."
+
+            # Создаем клавиатуру с кнопкой завершения
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Выполнено", callback_data=f"complete_{task_id}")]
+            ])
+
+            try:
+                await bot.send_message(
+                    chat_id=user_id, 
+                    text=message,
+                    reply_markup=keyboard
+                )
+                logger.info(f"Напоминание отправлено для задачи: {task.title}")
+            except Exception as e:
+                logger.error(f"Ошибка при отправке напоминания: {e}")
     except Exception as e:
         logger.error(f"Ошибка при отправке напоминания: {e}")
 
@@ -721,7 +755,7 @@ async def topic_received(message: types.Message, state: FSMContext):
             user.learning_topic = topic
             user.learning_progress = 0
             await session.commit()
-            learning_plan = await generate_personalized_message(user, 'learning_plan', topic=topic)
+            learning_plan = await get_message(user, 'learning_plan', topic=topic)
             await message.answer(learning_plan)
             
             from scheduler import scheduler, check_learning_progress
@@ -735,7 +769,7 @@ async def suggest_resources(message: types.Message):
     async with get_db() as session:
         user = await session.get(User, user_id)
         if user and user.learning_topic:
-            resources = await generate_personalized_message(user, 'learning_resources', topic=user.learning_topic)
+            resources = await generate_message(user, 'learning_resources', topic=user.learning_topic)
             await message.answer(resources)
         else:
             await message.answer("Сначала выберите тему для изучения с помощью команды /learn.")
@@ -780,6 +814,14 @@ async def visualize_goals(message: types.Message):
     # Отправка графика пользователю
     await message.answer_photo(FSInputFile(buf, filename="goals_progress.png"))
 
+async def start_support_dialog(message: types.Message, state: FSMContext):
+    """Начинает диалог поддержки"""
+    await start_dialog_mode(message, state, "support")
+
+async def start_planning_dialog(message: types.Message, state: FSMContext):
+    """Начинает диалог планирования"""
+    await start_dialog_mode(message, state, "planning")
+
 # Регистрация обработчиков
 def register_handlers(router: Router):
     router.message.register(start_command, Command("start"))
@@ -801,3 +843,16 @@ def register_handlers(router: Router):
     router.message.register(tone_selected, ToneStates.waiting_for_tone)
     router.message.register(topic_received, LearningStates.waiting_for_topic)
     router.message.register(process_message, F.content_type == types.ContentType.TEXT)
+    router.message.register(handle_user_dialog_message, F.content_type == types.ContentType.TEXT)
+    router.callback_query.register(handle_dialog_action, F.data.startswith(("discuss_", "suggest_", "make_", "take_", "end_")))
+    router.message.register(start_support_dialog, Command("support"))
+    router.message.register(start_planning_dialog, Command("plan"))
+    router.message.register(
+        handle_user_dialog_message, 
+        F.content_type == types.ContentType.TEXT, 
+        DialogStates
+    )
+    router.callback_query.register(
+        handle_dialog_action,
+        F.data.startswith(("discuss_", "suggest_", "make_", "take_", "end_"))
+    )

@@ -1,15 +1,18 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, Interval
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, Interval, Enum
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime, timedelta
 import json
+import enum
+
 
 Base = declarative_base()
 
 class User(Base):
     __tablename__ = 'users'
 
-    user_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, primary_key=True)
     tone = Column(String, default='neutral')
     role = Column(String, default='assistant')
     learning_topic = Column(String, nullable=True)
@@ -19,7 +22,17 @@ class User(Base):
     notification_settings = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    interaction_preferences = Column(JSONB, default={})  # Предпочтения в общении
+    productivity_patterns = Column(JSONB, default={})    # Паттерны продуктивности
+    stress_indicators = Column(JSONB, default={})        # Индикаторы стресса
+    achievement_history = Column(JSONB, default={})      # История достижений
+    current_challenges = Column(JSONB, default=[])       # Текущие сложности
+    support_history = Column(JSONB, default={})          # История поддержки
     
+        # Связи
+    dialog_sessions = relationship("DialogSession", back_populates="user")
+    interaction_metrics = relationship("UserInteractionMetrics", back_populates="user")
+    emotional_states = relationship("UserEmotionalState", back_populates="user")
     tasks = relationship("Task", back_populates="owner")
     financial_records = relationship("FinancialRecord", back_populates="owner")
     regular_payments = relationship("RegularPayment", back_populates="owner")
@@ -46,6 +59,83 @@ class User(Base):
                 "evening": "19:00"
             }
         return json.loads(self.preferred_reminder_time)
+    
+class DialogSession(Base):
+    """Сессия диалога с пользователем"""
+    __tablename__ = 'dialog_sessions'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'))
+    start_time = Column(DateTime, default=datetime.now)
+    end_time = Column(DateTime, nullable=True)
+    topic = Column(String)
+    context = Column(JSONB, default={})
+    messages = Column(JSONB, default=[])
+    identified_issues = Column(JSONB, default=[])
+    proposed_solutions = Column(JSONB, default=[])
+    next_steps = Column(JSONB, default=[])
+    effectiveness_rating = Column(Integer, nullable=True)  # Оценка пользователем
+    
+    user = relationship("User", back_populates="dialog_sessions")
+    emotional_states = relationship("DialogEmotionalState", back_populates="session")
+
+class UserInteractionMetrics(Base):
+    """Метрики взаимодействия с пользователем"""
+    __tablename__ = 'user_interaction_metrics'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'))
+    date = Column(DateTime, default=datetime.now)
+    
+    # Метрики задач
+    task_completion_rate = Column(Float, default=0.0)
+    average_task_delay = Column(Integer, default=0)  # в часах
+    task_complexity_preference = Column(JSONB, default={})
+    
+    # Метрики времени
+    most_productive_hours = Column(JSONB, default=[])
+    response_times = Column(JSONB, default={})
+    break_patterns = Column(JSONB, default={})
+    
+    # Метрики взаимодействия
+    preferred_interaction_style = Column(String, nullable=True)
+    communication_patterns = Column(JSONB, default={})
+    support_effectiveness = Column(JSONB, default={})
+    
+    user = relationship("User", back_populates="interaction_metrics")
+
+class EmotionalState(enum.Enum):
+    MOTIVATED = "motivated"
+    STRESSED = "stressed"
+    OVERWHELMED = "overwhelmed"
+    FOCUSED = "focused"
+    PROCRASTINATING = "procrastinating"
+    NEUTRAL = "neutral"
+
+class DialogEmotionalState(Base):
+    """Эмоциональное состояние в рамках диалога"""
+    __tablename__ = 'dialog_emotional_states'
+    
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey('dialog_sessions.id'))
+    timestamp = Column(DateTime, default=datetime.now)
+    state = Column(Enum(EmotionalState))
+    confidence = Column(Float, default=0.0)
+    triggers = Column(JSONB, default=[])
+    
+    session = relationship("DialogSession", back_populates="emotional_states")
+
+class UserEmotionalState(Base):
+    __tablename__ = 'user_emotional_states'
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'))
+    timestamp = Column(DateTime, default=datetime.now)
+    state = Column(Enum(EmotionalState))
+    confidence = Column(Float, default=0.0)
+    context = Column(JSONB, default={})
+    
+    user = relationship("User", back_populates="emotional_states")
 
 class TaskCategory(Base):
     __tablename__ = 'task_categories'

@@ -2,13 +2,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 from sqlalchemy import select, or_, func
 from models import Task, User, FinancialRecord, RegularPayment, ReminderEffectiveness, TaskCategory
-from ai_module import generate_personalized_message, analyze_expenses
+from ai_module import analyze_expenses
 from database import get_db
-from message_utils import send_personalized_message
+from message_utils import generate_message, send_personalized_message
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import logging
 import json
-
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -85,9 +84,10 @@ async def send_overdue_reminders(bot):
                     ])
 
                     # Генерируем персонализированное сообщение
-                    message = await generate_personalized_message(
-                        user,
-                        'overdue_reminder',
+                    logger.info(f"Данные для generate_message: user_id={user.user_id}, message_type='task_reminder_overdue', task_title={task.title}, overdue_time={time_text}")
+                    message = await generate_message(
+                        user.user_id,
+                        'task_reminder_overdue',
                         task_title=task.title,
                         overdue_time=time_text
                     )
@@ -360,8 +360,8 @@ async def send_task_reminder(bot, user_id: int, task_id: int, reminder_type: str
                 'effectiveness': effectiveness.to_dict() if effectiveness else None
             }
             
-            message = await generate_personalized_message(
-                user,
+            message = await generate_message(
+                user.user_id,
                 f'task_reminder_{reminder_type}',
                 **message_data
             )
@@ -461,7 +461,7 @@ async def check_tasks(bot):
 async def send_workload_warning(bot, user, time_period, tasks_count):
     """Отправляет предупреждение о большом количестве задач в один период"""
     try:
-        message = await generate_personalized_message(
+        message = await generate_message(
             user,
             'multiple_tasks_warning',
             tasks_count=tasks_count,
@@ -560,7 +560,7 @@ async def process_regular_payments(bot):
                     payment.next_payment_date += timedelta(days=365)
 
                 # Отправляем уведомление пользователю
-                message = await generate_personalized_message(
+                message = await generate_message(
                     user_id=payment.user_id,
                     message_type='regular_payment',
                     amount=payment.amount,
